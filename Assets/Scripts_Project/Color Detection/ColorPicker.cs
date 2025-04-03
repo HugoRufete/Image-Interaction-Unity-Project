@@ -37,7 +37,8 @@ public class ColorPicker : MonoBehaviour
         redSlider.maxValue = 255;
         greenSlider.maxValue = 255;
         blueSlider.maxValue = 255;
-        toleranceSlider.maxValue = 1.0f;
+        toleranceSlider.maxValue = 0.75f;
+
 
         // Establecer valores iniciales
         redSlider.value = 255;
@@ -60,8 +61,16 @@ public class ColorPicker : MonoBehaviour
         blueInput.onEndEdit.AddListener(OnBlueInputChanged);
         toleranceInput.onEndEdit.AddListener(OnToleranceInputChanged);
 
-        // Listener para el botón de confirmación
-        confirmButton.onClick.AddListener(ConfirmColorSelection);
+        // El botón de confirmación ya no es necesario, pero lo mantenemos por si acaso
+        if (confirmButton != null)
+        {
+            confirmButton.onClick.AddListener(ConfirmColorSelection);
+            // Opcional: ocultar el botón ya que no es necesario
+            confirmButton.gameObject.SetActive(false);
+        }
+
+        // Notificar el color inicial
+        NotifyColorChanged();
     }
 
     private void OnRedSliderChanged(float value)
@@ -69,6 +78,7 @@ public class ColorPicker : MonoBehaviour
         selectedColor.r = value / 255f;
         redInput.text = Mathf.RoundToInt(value).ToString();
         UpdateColorPreview();
+        NotifyColorChanged(); // Actualizar en tiempo real
     }
 
     private void OnGreenSliderChanged(float value)
@@ -76,6 +86,7 @@ public class ColorPicker : MonoBehaviour
         selectedColor.g = value / 255f;
         greenInput.text = Mathf.RoundToInt(value).ToString();
         UpdateColorPreview();
+        NotifyColorChanged(); // Actualizar en tiempo real
     }
 
     private void OnBlueSliderChanged(float value)
@@ -83,12 +94,24 @@ public class ColorPicker : MonoBehaviour
         selectedColor.b = value / 255f;
         blueInput.text = Mathf.RoundToInt(value).ToString();
         UpdateColorPreview();
+        NotifyColorChanged(); // Actualizar en tiempo real
     }
 
     private void OnToleranceSliderChanged(float value)
     {
         colorTolerance = value;
-        toleranceInput.text = value.ToString("F2");
+
+        // Mostrar descripción textual de la tolerancia
+        string descripcion = "Muy estricta";
+        if (value > 0.4f) descripcion = "Muy permisiva";
+        else if (value > 0.3f) descripcion = "Permisiva";
+        else if (value > 0.2f) descripcion = "Normal";
+        else if (value > 0.1f) descripcion = "Estricta";
+
+        // Si estás usando TMP_Text, puedes añadir esta descripción al texto
+        toleranceInput.text = value.ToString("F2") + " - " + descripcion;
+
+        NotifyColorChanged();
     }
 
     private void OnRedInputChanged(string input)
@@ -97,7 +120,7 @@ public class ColorPicker : MonoBehaviour
         {
             value = Mathf.Clamp(value, 0, 255);
             redSlider.value = value;
-            // El slider ya actualizará el color y el preview
+            // El slider ya actualizará el color, el preview y notificará el cambio
         }
         else
         {
@@ -111,6 +134,7 @@ public class ColorPicker : MonoBehaviour
         {
             value = Mathf.Clamp(value, 0, 255);
             greenSlider.value = value;
+            // El slider ya actualizará el color, el preview y notificará el cambio
         }
         else
         {
@@ -124,6 +148,7 @@ public class ColorPicker : MonoBehaviour
         {
             value = Mathf.Clamp(value, 0, 255);
             blueSlider.value = value;
+            // El slider ya actualizará el color, el preview y notificará el cambio
         }
         else
         {
@@ -137,6 +162,7 @@ public class ColorPicker : MonoBehaviour
         {
             value = Mathf.Clamp(value, 0f, 1f);
             toleranceSlider.value = value;
+            // El slider ya actualizará la tolerancia y notificará el cambio
         }
         else
         {
@@ -157,11 +183,17 @@ public class ColorPicker : MonoBehaviour
         colorPreview.color = selectedColor;
     }
 
-    private void ConfirmColorSelection()
+    private void NotifyColorChanged()
     {
         // Notificar a otros componentes sobre el color seleccionado
         OnColorSelected?.Invoke(selectedColor, colorTolerance);
-        Debug.Log($"Color seleccionado: R:{selectedColor.r * 255}, G:{selectedColor.g * 255}, B:{selectedColor.b * 255}, Tolerancia: {colorTolerance}");
+        Debug.Log($"Color actualizado: R:{selectedColor.r * 255}, G:{selectedColor.g * 255}, B:{selectedColor.b * 255}, Tolerancia: {colorTolerance}");
+    }
+
+    private void ConfirmColorSelection()
+    {
+        // Mantener el método por compatibilidad, pero ahora solo llama a NotifyColorChanged
+        NotifyColorChanged();
     }
 
     // Método público para obtener el color actual

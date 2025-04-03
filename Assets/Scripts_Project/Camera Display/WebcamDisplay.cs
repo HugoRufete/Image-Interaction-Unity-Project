@@ -6,7 +6,7 @@ public class WebcamDisplay : MonoBehaviour
     [SerializeField] private RawImage displayImage;
     [SerializeField] private AspectRatioFitter aspectRatioFitter;
 
-    private WebCamTexture webcamTexture;
+    [HideInInspector] public WebCamTexture webcamTexture;
     private bool isCameraInitialized = false;
 
     void Start()
@@ -59,15 +59,9 @@ public class WebcamDisplay : MonoBehaviour
         }
     }
 
-    // Método público para obtener la textura de la webcam
-    public WebCamTexture GetWebcamTexture()
-    {
-        return webcamTexture;
-    }
-
     // Método para verificar si la cámara está inicializada
     public bool IsCameraInitialized()
     {
-        return isCameraInitialized && webcamTexture != null && webcamTexture.isPlaying;
+        return isCameraInitialized && webcamTexture != null && webcamTexture.isPlaying && webcamTexture.width > 16;
     }
 }
