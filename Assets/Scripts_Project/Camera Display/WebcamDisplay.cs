@@ -58,4 +58,16 @@ public class WebcamDisplay : MonoBehaviour
             webcamTexture.Stop();
         }
     }
+
+    // Método público para obtener la textura de la webcam
+    public WebCamTexture GetWebcamTexture()
+    {
+        return webcamTexture;
+    }
+
+    // Método para verificar si la cámara está inicializada
+    public bool IsCameraInitialized()
+    {
+        return isCameraInitialized && webcamTexture != null && webcamTexture.isPlaying;
+    }
 }
