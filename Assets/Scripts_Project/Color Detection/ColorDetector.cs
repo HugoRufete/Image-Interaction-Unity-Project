@@ -9,7 +9,8 @@ public class ColorDetector : MonoBehaviour
     [SerializeField] private ColorPicker colorPicker;
     [SerializeField] private Transform playerShip;
     [SerializeField] private RectTransform canvasRectTransform;
-    [SerializeField] private RawImage webcamRawImage; // Referencia directa al RawImage
+    [SerializeField] private RawImage webcamRawImage;
+    [SerializeField] private Camera mainCamera;
 
     [Header("Detection Settings")]
     [SerializeField] private int scanFrequency = 30; // Cada cuántos frames actualizar
@@ -20,6 +21,7 @@ public class ColorDetector : MonoBehaviour
     [SerializeField] private GameObject detectionMarkerPrefab;
     [SerializeField] private bool showDetectionMarker = true;
     [SerializeField] private float markerSpawnInterval = 0.2f;
+    [SerializeField] private bool moveShipToRedCircle = true; // Usar el centro del círculo rojo para la nave
 
     [Header("Debug")]
     public bool showDebugInfo = true;
@@ -37,6 +39,12 @@ public class ColorDetector : MonoBehaviour
     private Vector2 lastDetectedPosition;
     private bool objectDetected = false;
     private float lastMarkerTime = 0f;
+    private RenderTexture debugRenderTexture; // Para capturar la textura de depuración
+
+    [Header("Direct Positioning")]
+    [SerializeField] private bool createVisibleRedCircle = true; // Crea un objeto visible en la posición del círculo rojo
+    [SerializeField] private GameObject redCirclePrefab; // Prefab para el círculo rojo visible
+    private Vector3 redCircleWorldPosition;
 
     void Start()
     {
@@ -110,6 +118,52 @@ public class ColorDetector : MonoBehaviour
                 Debug.LogError("No se pudo encontrar un Canvas en la escena. Por favor, asigna manualmente la referencia al Canvas.");
             }
         }
+
+        // Verificar si hay referencia a la cámara
+        if (mainCamera == null)
+        {
+            mainCamera = Camera.main;
+            if (mainCamera == null)
+            {
+                Debug.LogError("No se pudo encontrar la cámara principal. Por favor, asigna una referencia manualmente.");
+            }
+        }
+
+        if (createVisibleRedCircle && redCirclePrefab == null)
+        {
+            // Crear un prefab simple si no se proporciona uno
+            GameObject circleObj = new GameObject("RedCirclePrefab");
+            SpriteRenderer sr = circleObj.AddComponent<SpriteRenderer>();
+
+            // Crear una textura circular roja
+            Texture2D tex = new Texture2D(32, 32);
+            for (int x = 0; x < tex.width; x++)
+            {
+                for (int y = 0; y < tex.height; y++)
+                {
+                    float distFromCenter = Vector2.Distance(new Vector2(x, y), new Vector2(tex.width / 2, tex.height / 2));
+                    if (distFromCenter <= tex.width / 2)
+                    {
+                        tex.SetPixel(x, y, Color.red);
+                    }
+                    else
+                    {
+                        tex.SetPixel(x, y, new Color(0, 0, 0, 0));
+                    }
+                }
+            }
+            tex.Apply();
+
+            // Crear sprite y asignarlo
+            Sprite circleSprite = Sprite.Create(tex, new Rect(0, 0, tex.width, tex.height), Vector2.one * 0.5f);
+            sr.sprite = circleSprite;
+
+            // Guardar como prefab
+            redCirclePrefab = circleObj;
+            redCirclePrefab.SetActive(false); // Ocultar el original
+        }
+
+        CheckCameraSetup();
     }
 
     private System.Collections.IEnumerator WaitForWebcamInitialization()
@@ -142,32 +196,8 @@ public class ColorDetector : MonoBehaviour
             UpdateDetectionStatus();
         }
 
-        // Si se detectó un objeto, mover la nave del jugador
-        if (objectDetected && playerShip != null)
-        {
-            // Verificar que canvasRectTransform no sea nulo
-            if (canvasRectTransform != null)
-            {
-                // Convertir la posición detectada al espacio del canvas
-                Vector2 canvasPosition = ConvertToCanvasPosition(lastDetectedPosition);
-
-                // Si el PlayerShip tiene el componente PlayerShip, usar su método
-                PlayerShip shipController = playerShip.GetComponent<PlayerShip>();
-                if (shipController != null)
-                {
-                    shipController.SetTargetPosition(new Vector3(canvasPosition.x, canvasPosition.y, playerShip.position.z));
-                }
-                else
-                {
-                    // Si no, mover directamente
-                    playerShip.position = new Vector3(canvasPosition.x, canvasPosition.y, playerShip.position.z);
-                }
-            }
-            else
-            {
-                Debug.LogError("canvasRectTransform es nulo. No se puede convertir la posición.");
-            }
-        }
+        // No necesitamos mover la nave aquí si estamos usando moveShipToRedCircle
+        // ya que se moverá directamente en DetectColorObject
     }
 
     private void UpdateDetectionStatus()
@@ -295,6 +325,9 @@ public class ColorDetector : MonoBehaviour
                     }
                 }
             }
+
+            // NUEVA IMPLEMENTACIÓN: Mover siempre la nave al centro del objeto detectado
+            MoveShipToCenterPoint(centerPoint);
         }
         else
         {
@@ -324,6 +357,108 @@ public class ColorDetector : MonoBehaviour
                 debugVisualizer.UpdateDetectionTime(detectionTime);
             }
         }
+    }
+
+    private void CreateVisibleRedCircle(Vector2 centerPoint)
+    {
+        // Eliminar cualquier círculo anterior
+        GameObject existingCircle = GameObject.Find("VisibleRedCircle");
+        if (existingCircle != null)
+        {
+            Destroy(existingCircle);
+        }
+
+        // Crear un nuevo círculo rojo visible usando el prefab
+        if (redCirclePrefab != null)
+        {
+            // Convertir coordenadas de textura a coordenadas normalizadas
+            Vector2 normalizedPos = new Vector2(
+                centerPoint.x / webcamTexture.width,
+                1 - (centerPoint.y / webcamTexture.height) // Invertir Y
+            );
+
+            // Obtener las esquinas del RawImage en coordenadas de mundo
+            RectTransform rt = webcamRawImage.rectTransform;
+            Vector3[] corners = new Vector3[4];
+            rt.GetWorldCorners(corners);
+
+            // Calcular la posición exacta en el mundo
+            Vector3 worldPos = new Vector3(
+                Mathf.Lerp(corners[0].x, corners[2].x, normalizedPos.x),
+                Mathf.Lerp(corners[0].y, corners[2].y, normalizedPos.y),
+                -1 // Delante del canvas
+            );
+
+            // Guardar la posición mundial para usar con la nave
+            redCircleWorldPosition = worldPos;
+
+            // Instanciar el círculo rojo visible
+            GameObject circle = Instantiate(redCirclePrefab, worldPos, Quaternion.identity);
+            circle.name = "VisibleRedCircle";
+            circle.SetActive(true);
+
+            // Hacer que el círculo sea pequeño
+            circle.transform.localScale = Vector3.one * 0.1f;
+
+            Debug.Log($"Círculo rojo visible creado en posición mundial: {worldPos}");
+        }
+    }
+
+    // Método nuevo para mover la nave a la posición del círculo rojo
+    private void MoveShipToDebugPosition(Vector2 centerPoint)
+    {
+        // Obtener la posición normalizada (0-1) en la textura de la webcam
+        Vector2 normalizedPos = new Vector2(
+            centerPoint.x / webcamTexture.width,
+            1f - (centerPoint.y / webcamTexture.height) // Invertir Y para UI
+        );
+
+        // Obtener las esquinas del RawImage en coordenadas de mundo
+        RectTransform rt = webcamRawImage.rectTransform;
+        if (rt == null)
+        {
+            Debug.LogError("No se pudo obtener el RectTransform del RawImage");
+            return;
+        }
+
+        // Obtener las esquinas del RawImage en el mundo
+        Vector3[] corners = new Vector3[4];
+        rt.GetWorldCorners(corners);
+        // corners[0] = esquina inferior izquierda
+        // corners[2] = esquina superior derecha
+
+        // Calcular la posición exacta dentro del RawImage basado en la posición normalizada
+        Vector3 exactPosition = new Vector3(
+            Mathf.Lerp(corners[0].x, corners[2].x, normalizedPos.x),
+            Mathf.Lerp(corners[0].y, corners[2].y, normalizedPos.y),
+            playerShip.position.z // Mantener Z
+        );
+
+        // Mover la nave
+        PlayerShip shipController = playerShip.GetComponent<PlayerShip>();
+        if (shipController != null)
+        {
+            shipController.SetTargetPosition(exactPosition);
+        }
+        else
+        {
+            // Movimiento manual con interpolación
+            playerShip.position = Vector3.Lerp(
+                playerShip.position,
+                exactPosition,
+                Time.deltaTime * 10f
+            );
+        }
+
+        // Debug visual - dibujar una línea para ver dónde se está moviendo la nave
+        Debug.DrawLine(
+            playerShip.position,
+            exactPosition,
+            Color.yellow,
+            0.1f
+        );
+
+        Debug.Log($"Moviendo nave a: {exactPosition} (desde centro en textura: {centerPoint})");
     }
 
     private bool IsColorMatch(Color pixel, Color target, float tolerance)
@@ -526,6 +661,145 @@ public class ColorDetector : MonoBehaviour
         catch (System.Exception e)
         {
             Debug.LogError("Error al instanciar el marcador: " + e.Message);
+        }
+    }
+
+    // Reemplaza el método MoveShipToCenterPoint() en ColorDetector.cs con este:
+
+    // Modificación para el método MoveShipToCenterPoint() en ColorDetector.cs
+
+    private void MoveShipToCenterPoint(Vector2 centerPoint)
+    {
+        if (playerShip == null)
+        {
+            Debug.LogError("playerShip no está asignado en ColorDetector");
+            return;
+        }
+
+        if (webcamRawImage == null)
+        {
+            Debug.LogError("webcamRawImage no está asignado en ColorDetector");
+            return;
+        }
+
+        // IMPORTANTE: Problema identificado - el eje Y está invertido
+        // 1. Convertir de coordenadas de textura a normalizadas (0-1)
+        // CORRECCIÓN: No invertimos el eje Y aquí, ya que eso causa la inversión
+        Vector2 normalizedPos = new Vector2(
+            centerPoint.x / webcamTexture.width,
+            centerPoint.y / webcamTexture.height  // CAMBIO AQUÍ: Quitamos el 1.0f - ...
+        );
+
+        // Alternativamente, si lo anterior no funciona, invertir la lógica aquí:
+        // Intentar segunda solución si la primera no funciona
+        // Vector2 normalizedPos = new Vector2(
+        //     centerPoint.x / webcamTexture.width,
+        //     1.0f - (centerPoint.y / webcamTexture.height)  // Mantener la inversión
+        // );
+        // // Pero luego invertir la interpolación en Y:
+        // worldPos.y = Mathf.Lerp(corners[2].y, corners[0].y, normalizedPos.y);  // Invertir orden de corners
+
+        // 2. Obtener las dimensiones y posición del RawImage
+        RectTransform rt = webcamRawImage.rectTransform;
+
+        // Obtener posición y tamaño del RawImage en el espacio del mundo
+        Vector3[] corners = new Vector3[4];
+        rt.GetWorldCorners(corners);
+
+        // corners[0] = Bottom-Left, corners[1] = Top-Left, 
+        // corners[2] = Top-Right, corners[3] = Bottom-Right
+
+        // 3. Calcular la posición exacta dentro del espacio del RawImage
+        Vector3 worldPos = Vector3.zero;
+
+        // Usar transformación directa basada en las esquinas del RawImage
+        worldPos.x = Mathf.Lerp(corners[0].x, corners[2].x, normalizedPos.x);
+
+        // CORRECCIÓN: Invertir el orden de interpolación para el eje Y
+        // Ya que no invertimos en la normalización, debemos interpolar
+        // desde la esquina inferior a la superior (no al revés)
+        worldPos.y = Mathf.Lerp(corners[0].y, corners[2].y, normalizedPos.y);
+
+        // Si la solución anterior no funciona, prueba esta alternativa:
+        // worldPos.y = Mathf.Lerp(corners[2].y, corners[0].y, normalizedPos.y);
+
+        worldPos.z = playerShip.position.z; // Mantener Z
+
+        // Debug avanzado - mostrar todos los pasos de conversión
+        Debug.Log($"Detección: Pixel={centerPoint}, Normalizado={normalizedPos}, " +
+                  $"Esquinas=[Bot-Left:{corners[0]}, Top-Left:{corners[1]}, Top-Right:{corners[2]}, Bot-Right:{corners[3]}], " +
+                  $"Final={worldPos}");
+
+        // Guardar posición para el círculo rojo
+        redCircleWorldPosition = worldPos;
+
+        // IMPORTANTE: Actualizar directamente la posición sin animación
+        playerShip.position = worldPos;
+
+        // Crear visualización del círculo rojo para depuración
+        if (createVisibleRedCircle && redCirclePrefab != null)
+        {
+            // Eliminar círculo anterior
+            GameObject existingCircle = GameObject.Find("VisibleRedCircle");
+            if (existingCircle != null)
+            {
+                Destroy(existingCircle);
+            }
+
+            // Crear nuevo círculo en la posición calculada
+            GameObject circle = Instantiate(redCirclePrefab, worldPos, Quaternion.identity);
+            circle.name = "VisibleRedCircle";
+            circle.SetActive(true);
+            circle.transform.localScale = Vector3.one * 0.1f;
+        }
+    }
+
+    private void CheckCameraSetup()
+    {
+        // Verificar la cámara principal
+        if (mainCamera == null)
+        {
+            mainCamera = Camera.main;
+            Debug.Log("Se ha asignado automáticamente la cámara principal: " +
+                      (mainCamera != null ? mainCamera.name : "No encontrada"));
+        }
+
+        // Verificar si estamos usando una cámara ortográfica como se recomienda para 2D
+        if (mainCamera != null && !mainCamera.orthographic)
+        {
+            Debug.LogWarning("La cámara principal no es ortográfica. Se recomienda usar una cámara ortográfica para juegos 2D.");
+        }
+
+        // Verificar la configuración del Canvas
+        Canvas canvas = null;
+        if (canvasRectTransform != null)
+        {
+            canvas = canvasRectTransform.GetComponent<Canvas>();
+        }
+
+        if (canvas != null)
+        {
+            if (canvas.renderMode != RenderMode.WorldSpace)
+            {
+                Debug.LogWarning("El Canvas no está configurado como World Space. Modo actual: " + canvas.renderMode);
+            }
+
+            if (canvas.worldCamera != mainCamera)
+            {
+                Debug.LogWarning("El Canvas está usando una cámara diferente a mainCamera. " +
+                                "Canvas.worldCamera: " + (canvas.worldCamera != null ? canvas.worldCamera.name : "null") +
+                                ", mainCamera: " + (mainCamera != null ? mainCamera.name : "null"));
+            }
+        }
+
+        // Imprimir información sobre capas y culling mask
+        if (mainCamera != null && playerShip != null)
+        {
+            int shipLayer = playerShip.gameObject.layer;
+            bool isLayerVisible = ((1 << shipLayer) & mainCamera.cullingMask) != 0;
+
+            Debug.Log($"Nave en capa: {LayerMask.LayerToName(shipLayer)} (índice {shipLayer}). " +
+                     $"Visible para mainCamera: {isLayerVisible}");
         }
     }
 }
