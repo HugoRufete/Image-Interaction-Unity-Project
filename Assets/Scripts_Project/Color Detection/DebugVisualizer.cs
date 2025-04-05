@@ -6,12 +6,10 @@ public class DebugVisualizer : MonoBehaviour
 {
     [SerializeField] private ColorDetector colorDetector;
     [SerializeField] private RawImage debugImage;
-    [SerializeField] private Toggle debugToggle;
     [SerializeField] private GameObject debugPanel;
 
     [Header("Performance Info")]
     [SerializeField] private TMP_Text fpsText;
-    [SerializeField] private TMP_Text detectionTimeText;
 
     private float deltaTime = 0.0f;
     private float detectionTime = 0.0f;
@@ -19,12 +17,6 @@ public class DebugVisualizer : MonoBehaviour
 
     void Start()
     {
-        if (debugToggle != null)
-        {
-            debugToggle.onValueChanged.AddListener(OnDebugToggleChanged);
-            showDebug = debugToggle.isOn;
-        }
-
         // Inicializar panel de depuración
         if (debugPanel != null)
         {
@@ -51,11 +43,6 @@ public class DebugVisualizer : MonoBehaviour
                 fpsText.color = Color.green;
         }
 
-        // Mostrar tiempo de detección
-        if (detectionTimeText != null)
-        {
-            detectionTimeText.text = $"Tiempo de detección: {detectionTime * 1000:F1} ms";
-        }
     }
 
     private void OnDebugToggleChanged(bool isOn)

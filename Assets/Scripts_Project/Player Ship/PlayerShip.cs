@@ -114,12 +114,10 @@ public class PlayerShip : MonoBehaviour
         float camHeight = 2f * mainCamera.orthographicSize;
         float camWidth = camHeight * mainCamera.aspect;
 
-        // Límites considerando la posición de la cámara y el tamaño del sprite
-        float minX = mainCamera.transform.position.x - (camWidth / 2) + spriteHalfSize.x + boundaryPadding;
-        float maxX = mainCamera.transform.position.x + (camWidth / 2) - spriteHalfSize.x - boundaryPadding;
-        float minY = mainCamera.transform.position.y - (camHeight / 2) + spriteHalfSize.y + boundaryPadding;
-        float maxY = mainCamera.transform.position.y + (camHeight / 2) - spriteHalfSize.y - boundaryPadding;
-
+        float minX = mainCamera.transform.position.x - (camWidth / 2) + spriteHalfSize.x + boundaryPadding * 0.5f;
+        float maxX = mainCamera.transform.position.x + (camWidth / 2) - spriteHalfSize.x - boundaryPadding * 0.5f;
+        float minY = mainCamera.transform.position.y - (camHeight / 2) + spriteHalfSize.y + boundaryPadding * 0.5f;
+        float maxY = mainCamera.transform.position.y + (camHeight / 2) - spriteHalfSize.y - boundaryPadding * 0.5f;
         // Restringir la posición dentro de los límites
         float x = Mathf.Clamp(position.x, minX, maxX);
         float y = Mathf.Clamp(position.y, minY, maxY);

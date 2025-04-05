@@ -12,7 +12,15 @@ public class PlayerHealth : MonoBehaviour
 
     [Header("UI References")]
     [SerializeField] private TMP_Text livesText;
-    [SerializeField] private Image[] livesIcons;
+
+    // Se eliminan los iconos de vida antiguos
+    // [SerializeField] private Image[] livesIcons;
+
+    [Header("Lives Display System")]
+    [SerializeField] private GameObject lifePrefab; // Prefab que representa una vida
+    [SerializeField] private Transform livesContainer; // El contenedor con HorizontalLayoutGroup
+    [SerializeField] private bool useAnimationOnLifeChange = true;
+    [SerializeField] private float lifeIconSpacing = 5f; // Espacio entre iconos de vida
 
     [Header("Visual Feedback")]
     [SerializeField] private float blinkRate = 0.1f;
@@ -21,10 +29,13 @@ public class PlayerHealth : MonoBehaviour
     [Header("Events")]
     public UnityEvent onPlayerHit;
     public UnityEvent onPlayerDeath;
+    public UnityEvent onLifeAdded;
+    public UnityEvent onLifeRemoved;
 
     private int currentLives;
     private bool isInvincible = false;
     private float survivalTime = 0f;
+    private GameObject[] lifeObjects; // Array para almacenar las referencias a los objetos de vida
 
     public int CurrentLives => currentLives;
     public float SurvivalTime => survivalTime;
@@ -32,6 +43,34 @@ public class PlayerHealth : MonoBehaviour
     private void Start()
     {
         currentLives = maxLives;
+
+        // Inicializar array de objetos de vida
+        lifeObjects = new GameObject[maxLives];
+
+        // Comprobar que tenemos un contenedor y un prefab
+        if (lifePrefab == null)
+        {
+            Debug.LogError("Life prefab not assigned to PlayerHealth. Cannot display life icons.");
+        }
+
+        if (livesContainer == null)
+        {
+            Debug.LogError("Lives container not assigned to PlayerHealth. Cannot display life icons.");
+        }
+
+        // Verificar que el contenedor tiene un HorizontalLayoutGroup
+        if (livesContainer != null && livesContainer.GetComponent<HorizontalLayoutGroup>() == null)
+        {
+            Debug.LogWarning("Lives container does not have a HorizontalLayoutGroup component. Adding one...");
+            HorizontalLayoutGroup layout = livesContainer.gameObject.AddComponent<HorizontalLayoutGroup>();
+            layout.spacing = lifeIconSpacing;
+            layout.childAlignment = TextAnchor.MiddleLeft;
+        }
+
+        // Inicializar la visualización de vidas
+        UpdateLivesDisplay();
+
+        // Actualizar texto UI
         UpdateUI();
 
         // If sprite renderer not assigned, try to get it from this object
@@ -59,6 +98,7 @@ public class PlayerHealth : MonoBehaviour
         // If already invincible, do not take damage
         if (isInvincible) return;
 
+        int previousLives = currentLives;
         currentLives -= amount;
 
         // Ensure lives don't go below 0
@@ -67,8 +107,17 @@ public class PlayerHealth : MonoBehaviour
         // Update UI
         UpdateUI();
 
+        // Update lives display
+        UpdateLivesDisplay();
+
         // Invoke hit event
         onPlayerHit?.Invoke();
+
+        // Lanzar evento de vida perdida
+        if (previousLives > currentLives)
+        {
+            onLifeRemoved?.Invoke();
+        }
 
         // Play hit feedback (blink)
         StartCoroutine(InvincibilityCoroutine());
@@ -82,6 +131,7 @@ public class PlayerHealth : MonoBehaviour
 
     public void AddLife(int amount = 1)
     {
+        int previousLives = currentLives;
         currentLives += amount;
 
         // Ensure lives don't exceed max
@@ -89,6 +139,15 @@ public class PlayerHealth : MonoBehaviour
 
         // Update UI
         UpdateUI();
+
+        // Update lives display
+        UpdateLivesDisplay();
+
+        // Lanzar evento de vida añadida
+        if (currentLives > previousLives)
+        {
+            onLifeAdded?.Invoke();
+        }
     }
 
     private void UpdateUI()
@@ -98,18 +157,57 @@ public class PlayerHealth : MonoBehaviour
         {
             livesText.text = "Lives: " + currentLives;
         }
+    }
 
-        // Update icons if available
-        if (livesIcons != null && livesIcons.Length > 0)
+    private void UpdateLivesDisplay()
+    {
+        // Verificar que tenemos el prefab y el contenedor
+        if (lifePrefab == null || livesContainer == null)
+            return;
+
+        // Limpiar los iconos existentes
+        foreach (Transform child in livesContainer)
         {
-            for (int i = 0; i < livesIcons.Length; i++)
-            {
-                if (livesIcons[i] != null)
-                {
-                    livesIcons[i].enabled = i < currentLives;
-                }
-            }
+            Destroy(child.gameObject);
         }
+
+        // Crear nuevos iconos de vida basados en el número de vidas actuales
+        for (int i = 0; i < currentLives; i++)
+        {
+            GameObject lifeIcon = Instantiate(lifePrefab, livesContainer);
+
+            // Opcional: Añadir alguna animación para el cambio de vidas
+            if (useAnimationOnLifeChange)
+            {
+                // Efecto de escala
+                lifeIcon.transform.localScale = Vector3.zero;
+                StartCoroutine(ScaleInAnimation(lifeIcon.transform));
+            }
+
+            // Guardar referencia
+            lifeObjects[i] = lifeIcon;
+        }
+    }
+
+    private IEnumerator ScaleInAnimation(Transform iconTransform)
+    {
+        float duration = 0.3f;
+        float elapsed = 0f;
+
+        while (elapsed < duration)
+        {
+            elapsed += Time.deltaTime;
+            float normalizedTime = elapsed / duration;
+
+            // Curva de animación suavizada
+            float scale = Mathf.SmoothStep(0, 1, normalizedTime);
+            iconTransform.localScale = new Vector3(scale, scale, scale);
+
+            yield return null;
+        }
+
+        // Asegurarse de que termina con escala 1
+        iconTransform.localScale = Vector3.one;
     }
 
     private IEnumerator InvincibilityCoroutine()
@@ -154,5 +252,6 @@ public class PlayerHealth : MonoBehaviour
     {
         currentLives = maxLives;
         UpdateUI();
+        UpdateLivesDisplay();
     }
 }
