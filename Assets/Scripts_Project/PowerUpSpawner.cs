@@ -34,24 +34,36 @@ public class PowerUpSpawner : MonoBehaviour
 
     private void Start()
     {
+        // Obtener la cámara principal
         mainCamera = Camera.main;
+        if (mainCamera == null)
+        {
+            Debug.LogError("Main camera not found! PowerUpSpawner requires a main camera.");
+            this.enabled = false;
+            return;
+        }
 
-        // Find GameManager
+        // Encontrar GameManager
         gameManager = FindAnyObjectByType<GameManager>();
-        if (gameManager == null)    
+        if (gameManager == null)
         {
             Debug.LogError("GameManager not found! PowerUpSpawner requires GameManager.");
             this.enabled = false; // Desactivar este componente si no hay GameManager
             return;
         }
 
-        // Try to find player health if not assigned
+        // Buscar playerHealth si no está asignado
         if (playerHealth == null)
         {
             GameObject player = GameObject.FindGameObjectWithTag("Player");
             if (player != null)
             {
                 playerHealth = player.GetComponent<PlayerHealth>();
+                Debug.Log("PowerUpSpawner: PlayerHealth component found automatically");
+            }
+            else
+            {
+                Debug.LogWarning("Player not found - PowerUp frequency won't adjust based on health");
             }
         }
 
@@ -63,7 +75,13 @@ public class PowerUpSpawner : MonoBehaviour
             return;
         }
 
-        // No iniciar spawning automáticamente
+        // Verificar spawnPoints
+        if (!useRandomSpawnArea && (specificSpawnPoints == null || specificSpawnPoints.Length == 0))
+        {
+            Debug.LogWarning("No specific spawn points assigned but useRandomSpawnArea is false. Defaulting to random spawning.");
+            useRandomSpawnArea = true;
+        }
+
         Debug.Log("PowerUpSpawner initialized - NOT spawning until game starts");
     }
 
@@ -109,7 +127,7 @@ public class PowerUpSpawner : MonoBehaviour
             {
                 Debug.Log("Game state changed - exiting powerup spawn routine");
                 spawningActive = false;
-                yield break; // Salir completamente de la coroutine, no continuar
+                yield break; // Salir completamente de la coroutine
             }
 
             // Calculate next spawn interval
@@ -122,9 +140,11 @@ public class PowerUpSpawner : MonoBehaviour
                 if (playerHealth.CurrentLives == 1)
                 {
                     interval *= lowHealthMultiplier;
+                    Debug.Log($"Low health detected - reduced spawn interval to {interval}s");
                 }
             }
 
+            Debug.Log($"Next powerup in {interval} seconds");
             yield return new WaitForSeconds(interval);
 
             // TRIPLE VERIFICACIÓN - asegurarnos de que el juego sigue activo antes de crear el powerup
@@ -157,24 +177,34 @@ public class PowerUpSpawner : MonoBehaviour
             spawnPosition = new Vector3(
                 Random.Range(edgePadding, 1f - edgePadding),
                 Random.Range(edgePadding, 1f - edgePadding),
-                10f  // Z position in front of other elements
+                0f  // Mantenemos Z en 0 ya que estamos en 2D
             );
 
             // Convert to world position
             spawnPosition = mainCamera.ViewportToWorldPoint(spawnPosition);
-            spawnPosition.z = 0;  // Reset Z to 0 for 2D
+            spawnPosition.z = 0;  // Asegurar que Z es siempre 0
+
+            Debug.Log($"Spawning powerup at random position: {spawnPosition}");
         }
         else if (specificSpawnPoints != null && specificSpawnPoints.Length > 0)
         {
             // Pick a random spawn point from the array
             Transform spawnPoint = specificSpawnPoints[Random.Range(0, specificSpawnPoints.Length)];
+            if (spawnPoint == null)
+            {
+                Debug.LogError("PowerUpSpawner: Selected spawn point is null!");
+                return;
+            }
+
             spawnPosition = spawnPoint.position;
+            Debug.Log($"Spawning powerup at specific spawn point: {spawnPosition} (from {spawnPoint.name})");
         }
         else
         {
             // Fallback to center of screen
-            spawnPosition = mainCamera.ViewportToWorldPoint(new Vector3(0.5f, 0.5f, 10f));
+            spawnPosition = mainCamera.ViewportToWorldPoint(new Vector3(0.5f, 0.5f, 0f));
             spawnPosition.z = 0;
+            Debug.Log($"Spawning powerup at screen center fallback: {spawnPosition}");
         }
 
         // Instantiate the power-up
@@ -186,6 +216,9 @@ public class PowerUpSpawner : MonoBehaviour
             powerup.tag = "PowerUp";
             Debug.Log("PowerUp tag was missing - applied automatically");
         }
+
+        // Log de confirmación
+        Debug.Log($"PowerUp successfully spawned at {spawnPosition}");
     }
 
     public void StopSpawning()
@@ -216,6 +249,7 @@ public class PowerUpSpawner : MonoBehaviour
     // Force spawn a power-up immediately (useful for testing)
     public void ForceSpawnPowerUp()
     {
+        Debug.Log("Force spawning a powerup");
         SpawnHealthPowerUp();
     }
 

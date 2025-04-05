@@ -16,18 +16,27 @@ public class HealthPowerUp : MonoBehaviour
     private float spawnTime;
     private bool isBlinking = false;
     private Vector3 moveDirection;
+    private Camera mainCamera;
 
     private void Start()
     {
         spawnTime = Time.time;
+        mainCamera = Camera.main;
 
         if (spriteRenderer == null)
         {
             spriteRenderer = GetComponent<SpriteRenderer>();
+            if (spriteRenderer == null)
+            {
+                Debug.LogError("HealthPowerUp: SpriteRenderer component not found!");
+            }
         }
 
         // Set random move direction
         moveDirection = new Vector3(Random.Range(-1f, 1f), Random.Range(-1f, 1f), 0).normalized;
+
+        // Log spawn details
+        Debug.Log($"HealthPowerUp spawned at position {transform.position} with direction {moveDirection}");
     }
 
     private void Update()
@@ -45,11 +54,13 @@ public class HealthPowerUp : MonoBehaviour
         {
             isBlinking = true;
             InvokeRepeating(nameof(ToggleVisibility), 0, blinkRate);
+            Debug.Log("HealthPowerUp started blinking");
         }
 
         // Destroy if exceeded lifetime
         if (elapsedTime >= lifetime)
         {
+            Debug.Log("HealthPowerUp lifetime expired - destroying");
             Destroy(gameObject);
         }
     }
@@ -67,16 +78,20 @@ public class HealthPowerUp : MonoBehaviour
         // Check if player collected the powerup
         if (other.CompareTag("Player"))
         {
+            Debug.Log("Player contacted HealthPowerUp");
+
             PlayerHealth playerHealth = other.GetComponent<PlayerHealth>();
             if (playerHealth != null)
             {
                 playerHealth.AddLife(healthToRestore);
-
-                // Play pickup effect here if needed
-                // PlayPickupEffect();
+                Debug.Log($"Player health increased by {healthToRestore}. New health: {playerHealth.CurrentLives}");
 
                 // Destroy the powerup
                 Destroy(gameObject);
+            }
+            else
+            {
+                Debug.LogWarning("Player object missing PlayerHealth component!");
             }
         }
     }
@@ -84,24 +99,41 @@ public class HealthPowerUp : MonoBehaviour
     // This method keeps the powerup within screen boundaries
     private void KeepInBounds()
     {
-        Vector3 viewportPosition = Camera.main.WorldToViewportPoint(transform.position);
+        if (mainCamera == null)
+        {
+            mainCamera = Camera.main;
+            if (mainCamera == null) return;
+        }
+
+        Vector3 viewportPosition = mainCamera.WorldToViewportPoint(transform.position);
+
+        bool wasOutOfBounds = false;
 
         // If powerup hits screen edge, bounce it
         if (viewportPosition.x <= 0.05f || viewportPosition.x >= 0.95f)
         {
             moveDirection.x = -moveDirection.x;
+            wasOutOfBounds = true;
         }
 
         if (viewportPosition.y <= 0.05f || viewportPosition.y >= 0.95f)
         {
             moveDirection.y = -moveDirection.y;
+            wasOutOfBounds = true;
+        }
+
+        if (wasOutOfBounds)
+        {
+            Debug.Log("HealthPowerUp hit screen boundary - direction changed to " + moveDirection);
         }
 
         // Ensure it stays on screen
         viewportPosition.x = Mathf.Clamp(viewportPosition.x, 0.05f, 0.95f);
         viewportPosition.y = Mathf.Clamp(viewportPosition.y, 0.05f, 0.95f);
 
-        transform.position = Camera.main.ViewportToWorldPoint(viewportPosition);
+        // Convertimos a coordenadas de mundo manteniendo Z siempre en 0
+        Vector3 worldPos = mainCamera.ViewportToWorldPoint(new Vector3(viewportPosition.x, viewportPosition.y, 0));
+        transform.position = new Vector3(worldPos.x, worldPos.y, 0);
     }
 
     private void LateUpdate()

@@ -346,9 +346,9 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: 
   healthPowerUpPrefab: {fileID: 6929334133930288485, guid: 21656a7c302aa104daa0f1dd93a58634, type: 3}
-  initialSpawnDelay: 20
-  minSpawnInterval: 5
-  maxSpawnInterval: 10
+  initialSpawnDelay: 0
+  minSpawnInterval: 2
+  maxSpawnInterval: 7.5
   playerHealth: {fileID: 806886244}
   useRandomSpawnArea: 1
   specificSpawnPoints:
