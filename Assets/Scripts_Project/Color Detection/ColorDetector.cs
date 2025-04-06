@@ -2,6 +2,7 @@ using UnityEngine;
 using System.Collections.Generic;
 using TMPro;
 using UnityEngine.UI;
+using System.Collections;
 
 public class ColorDetector : MonoBehaviour
 {
@@ -16,6 +17,8 @@ public class ColorDetector : MonoBehaviour
     [SerializeField] private int scanFrequency = 30; // Cada cuántos frames actualizar
     [SerializeField] private int samplePoints = 100; // Número de puntos de muestra en la imagen
     [SerializeField] private float minObjectSize = 10f; // Tamaño mínimo para considerar un objeto
+    [SerializeField] private int maxMatchingPixels = 1000; // Tamaño máximo del buffer
+    [SerializeField] private float blobProximityThreshold = 20f; // Umbral para considerar píxeles como parte del mismo blob
 
     [Header("Detection Visualization")]
     [SerializeField] private GameObject detectionMarkerPrefab;
@@ -39,12 +42,27 @@ public class ColorDetector : MonoBehaviour
     private Vector2 lastDetectedPosition;
     private bool objectDetected = false;
     private float lastMarkerTime = 0f;
-    private RenderTexture debugRenderTexture; // Para capturar la textura de depuración
+
+    // Buffers optimizados
+    private Color[] pixelBuffer;
+    private Vector2[] matchingPixelsBuffer;
+    private int matchingPixelCount;
+    private bool[] processedPixelBuffer;
 
     [Header("Direct Positioning")]
     [SerializeField] private bool createVisibleRedCircle = true; // Crea un objeto visible en la posición del círculo rojo
     [SerializeField] private GameObject redCirclePrefab; // Prefab para el círculo rojo visible
     private Vector3 redCircleWorldPosition;
+
+    // Filtrado y suavizado
+    private Vector2 filteredPosition;
+    [SerializeField] private float positionSmoothFactor = 0.3f;
+    [SerializeField] private bool enablePositionSmoothing = true;
+
+    // Control de estabilidad
+    [SerializeField] private float minMovementThreshold = 2.5f;
+    private Vector2 lastStablePosition;
+    private float stabilityTimer = 0f;
 
     void Start()
     {
@@ -74,16 +92,15 @@ public class ColorDetector : MonoBehaviour
                 {
                     Debug.LogError("No se pudo encontrar RawImage en webcamDisplay o sus hijos. Por favor, asígnalo manualmente.");
                 }
-                else
-                {
-                    Debug.Log("RawImage encontrado en los hijos de webcamDisplay");
-                }
-            }
-            else
-            {
-                Debug.Log("RawImage encontrado en webcamDisplay");
             }
         }
+
+        // Inicializar buffers
+        matchingPixelsBuffer = new Vector2[maxMatchingPixels];
+        processedPixelBuffer = new bool[maxMatchingPixels];
+        matchingPixelCount = 0;
+        filteredPosition = Vector2.zero;
+        lastStablePosition = Vector2.zero;
 
         // Obtener la referencia a la textura de la webcam
         if (webcamDisplay != null)
@@ -129,6 +146,7 @@ public class ColorDetector : MonoBehaviour
             }
         }
 
+        // Configuración del círculo rojo
         if (createVisibleRedCircle && redCirclePrefab == null)
         {
             // Crear un prefab simple si no se proporciona uno
@@ -176,6 +194,10 @@ public class ColorDetector : MonoBehaviour
         }
 
         webcamTexture = webcamDisplay.webcamTexture;
+
+        // Inicializar buffer de píxeles
+        pixelBuffer = new Color[webcamTexture.width * webcamTexture.height];
+
         Debug.Log("Webcam inicializada correctamente: " + webcamTexture.width + "x" + webcamTexture.height);
     }
 
@@ -189,15 +211,12 @@ public class ColorDetector : MonoBehaviour
         // Actualizar la detección cada cierto número de frames para mejor rendimiento
         if (frameCounter >= scanFrequency)
         {
-            DetectColorObject();
+            OptimizedDetectColorObject();
             frameCounter = 0;
 
             // Actualizar el texto de estado
             UpdateDetectionStatus();
         }
-
-        // No necesitamos mover la nave aquí si estamos usando moveShipToRedCircle
-        // ya que se moverá directamente en DetectColorObject
     }
 
     private void UpdateDetectionStatus()
@@ -224,58 +243,72 @@ public class ColorDetector : MonoBehaviour
         Debug.Log($"Color detector actualizado: {newColor}, Tolerancia: {newTolerance}");
     }
 
-    private void DetectColorObject()
+    private void OptimizedDetectColorObject()
     {
+        float startTime = Time.realtimeSinceStartup;
+
+        // Verificar dimensiones de textura
         if (webcamTexture.width <= 0 || webcamTexture.height <= 0)
             return;
 
-        float startTime = Time.realtimeSinceStartup;
-
-        // Lista para almacenar posiciones de píxeles que coinciden con el color
-        List<Vector2> matchingPixels = new List<Vector2>();
+        // Verificar y redimensionar buffers si es necesario
+        if (pixelBuffer == null || pixelBuffer.Length != webcamTexture.width * webcamTexture.height)
+        {
+            pixelBuffer = new Color[webcamTexture.width * webcamTexture.height];
+        }
 
         // Calcular el paso para distribuir los puntos de muestra uniformemente
         int stepX = Mathf.Max(1, Mathf.FloorToInt(webcamTexture.width / Mathf.Sqrt(samplePoints)));
         int stepY = Mathf.Max(1, Mathf.FloorToInt(webcamTexture.height / Mathf.Sqrt(samplePoints)));
+
+        Color[] pixels = webcamTexture.GetPixels(0, 0, webcamTexture.width, webcamTexture.height);
+        System.Array.Copy(pixels, pixelBuffer, pixels.Length);
+
+        // Resetear contador de píxeles coincidentes
+        matchingPixelCount = 0;
 
         // Crear una textura de depuración si es necesario
         Texture2D debugTexture = null;
         if (showDebugInfo && createDebugTexture && debugVisualizer != null)
         {
             debugTexture = new Texture2D(webcamTexture.width, webcamTexture.height, TextureFormat.RGBA32, false);
-
-            // Copiar la textura de la webcam a la textura de depuración
-            Color[] pixels = webcamTexture.GetPixels();
-            debugTexture.SetPixels(pixels);
+            debugTexture.SetPixels(pixelBuffer);
         }
 
-        // Recorrer puntos distribuidos en la imagen (no todos los píxeles por rendimiento)
+        // Muestrear píxeles con el paso calculado
         for (int x = 0; x < webcamTexture.width; x += stepX)
         {
             for (int y = 0; y < webcamTexture.height; y += stepY)
             {
-                // Obtener el color del píxel actual
-                Color pixelColor = webcamTexture.GetPixel(x, y);
+                // Calcular índice en el buffer lineal
+                int index = y * webcamTexture.width + x;
 
-                // Verificar si el color está dentro del rango de tolerancia
-                bool isMatch = IsColorMatch(pixelColor, targetColor, colorTolerance);
-
-                if (isMatch)
+                // Comprobar límites
+                if (index < pixelBuffer.Length)
                 {
-                    matchingPixels.Add(new Vector2(x, y));
+                    Color pixelColor = pixelBuffer[index];
 
-                    // Marcar el píxel en la textura de depuración
-                    if (debugTexture != null)
+                    // Verificar si el color está dentro del rango de tolerancia
+                    bool isMatch = OptimizedIsColorMatch(pixelColor, targetColor, colorTolerance);
+
+                    if (isMatch && matchingPixelCount < matchingPixelsBuffer.Length)
                     {
-                        // Dibujar un pequeño cuadrado alrededor del píxel coincidente
-                        int size = 4; // Tamaño del marcador
-                        for (int dx = -size; dx <= size; dx++)
+                        matchingPixelsBuffer[matchingPixelCount] = new Vector2(x, y);
+                        matchingPixelCount++;
+
+                        // Marcar el píxel en la textura de depuración
+                        if (debugTexture != null)
                         {
-                            for (int dy = -size; dy <= size; dy++)
+                            // Dibujar un pequeño cuadrado alrededor del píxel coincidente
+                            int size = 4;
+                            for (int dx = -size; dx <= size; dx++)
                             {
-                                int px = Mathf.Clamp(x + dx, 0, webcamTexture.width - 1);
-                                int py = Mathf.Clamp(y + dy, 0, webcamTexture.height - 1);
-                                debugTexture.SetPixel(px, py, Color.green);
+                                for (int dy = -size; dy <= size; dy++)
+                                {
+                                    int px = Mathf.Clamp(x + dx, 0, webcamTexture.width - 1);
+                                    int py = Mathf.Clamp(y + dy, 0, webcamTexture.height - 1);
+                                    debugTexture.SetPixel(px, py, Color.green);
+                                }
                             }
                         }
                     }
@@ -283,27 +316,52 @@ public class ColorDetector : MonoBehaviour
             }
         }
 
-        // Si encontramos suficientes píxeles coincidentes, calcular el centro del objeto
-        if (matchingPixels.Count > minObjectSize)
+        // Si encontramos suficientes píxeles coincidentes, calcular el centro
+        if (matchingPixelCount > minObjectSize)
         {
-            Vector2 centerPoint = CalculateCenterPoint(matchingPixels);
+            // Encontrar el blob dominante y calcular su centro
+            Vector2 centerPoint = CalculateDominantBlobCenter();
+
+            // Aplicar filtrado para estabilidad
+            if (enablePositionSmoothing && filteredPosition != Vector2.zero)
+            {
+                filteredPosition = Vector2.Lerp(filteredPosition, centerPoint, positionSmoothFactor);
+
+                // Comprobar si el movimiento es significativo
+                float movement = Vector2.Distance(filteredPosition, lastStablePosition);
+                if (movement < minMovementThreshold)
+                {
+                    stabilityTimer += Time.deltaTime;
+                    // Actualizar posición estable si ha estado estable por un tiempo
+                    if (stabilityTimer > 0.2f)
+                    {
+                        lastStablePosition = filteredPosition;
+                    }
+                }
+                else
+                {
+                    stabilityTimer = 0f;
+                }
+
+                centerPoint = filteredPosition;
+            }
+            else
+            {
+                filteredPosition = centerPoint;
+                lastStablePosition = centerPoint;
+            }
+
             lastDetectedPosition = centerPoint;
             objectDetected = true;
 
             // Mostrar marcador visual en la posición detectada
             if (showDetectionMarker && detectionMarkerPrefab != null && Time.time - lastMarkerTime > markerSpawnInterval)
             {
-                // Verificar que canvasRectTransform no sea nulo
                 if (canvasRectTransform != null)
                 {
-                    // Convertir la posición detectada al espacio del canvas
                     Vector2 canvasPosition = ConvertToCanvasPosition(centerPoint);
                     SpawnDetectionMarker(canvasPosition);
                     lastMarkerTime = Time.time;
-                }
-                else
-                {
-                    Debug.LogError("canvasRectTransform es nulo. No se puede convertir la posición para el marcador.");
                 }
             }
 
@@ -326,7 +384,7 @@ public class ColorDetector : MonoBehaviour
                 }
             }
 
-            // NUEVA IMPLEMENTACIÓN: Mover siempre la nave al centro del objeto detectado
+            // Mover la nave al centro del objeto detectado
             MoveShipToCenterPoint(centerPoint);
         }
         else
@@ -339,7 +397,7 @@ public class ColorDetector : MonoBehaviour
         {
             if (pixelCountText != null && pixelThresholdText != null)
             {
-                pixelCountText.text = "Píxeles detectados: " + matchingPixels.Count;
+                pixelCountText.text = "Píxeles detectados: " + matchingPixelCount;
                 pixelThresholdText.text = "Umbral mínimo: " + minObjectSize;
             }
 
@@ -359,127 +417,128 @@ public class ColorDetector : MonoBehaviour
         }
     }
 
-    private void CreateVisibleRedCircle(Vector2 centerPoint)
+    // Algoritmo para encontrar el blob más grande y calcular su centro
+    private Vector2 CalculateDominantBlobCenter()
     {
-        // Eliminar cualquier círculo anterior
-        GameObject existingCircle = GameObject.Find("VisibleRedCircle");
-        if (existingCircle != null)
+        // Si hay pocos píxeles, simplemente promediar
+        if (matchingPixelCount < 20)
         {
-            Destroy(existingCircle);
+            return CalculateAverageCenter();
         }
 
-        // Crear un nuevo círculo rojo visible usando el prefab
-        if (redCirclePrefab != null)
+        // Implementar algoritmo de clustering simple para encontrar blobs
+        List<List<int>> blobs = FindConnectedBlobs();
+
+        // Encontrar el blob más grande
+        int largestBlobIndex = 0;
+        int maxSize = 0;
+
+        for (int i = 0; i < blobs.Count; i++)
         {
-            // Convertir coordenadas de textura a coordenadas normalizadas
-            Vector2 normalizedPos = new Vector2(
-                centerPoint.x / webcamTexture.width,
-                1 - (centerPoint.y / webcamTexture.height) // Invertir Y
-            );
-
-            // Obtener las esquinas del RawImage en coordenadas de mundo
-            RectTransform rt = webcamRawImage.rectTransform;
-            Vector3[] corners = new Vector3[4];
-            rt.GetWorldCorners(corners);
-
-            // Calcular la posición exacta en el mundo
-            Vector3 worldPos = new Vector3(
-                Mathf.Lerp(corners[0].x, corners[2].x, normalizedPos.x),
-                Mathf.Lerp(corners[0].y, corners[2].y, normalizedPos.y),
-                -1 // Delante del canvas
-            );
-
-            // Guardar la posición mundial para usar con la nave
-            redCircleWorldPosition = worldPos;
-
-            // Instanciar el círculo rojo visible
-            GameObject circle = Instantiate(redCirclePrefab, worldPos, Quaternion.identity);
-            circle.name = "VisibleRedCircle";
-            circle.SetActive(true);
-
-            // Hacer que el círculo sea pequeño
-            circle.transform.localScale = Vector3.one * 0.1f;
-
-            Debug.Log($"Círculo rojo visible creado en posición mundial: {worldPos}");
+            if (blobs[i].Count > maxSize)
+            {
+                maxSize = blobs[i].Count;
+                largestBlobIndex = i;
+            }
         }
+
+        // Calcular centro del blob más grande
+        Vector2 center = Vector2.zero;
+        foreach (int pixelIndex in blobs[largestBlobIndex])
+        {
+            center += matchingPixelsBuffer[pixelIndex];
+        }
+
+        center /= blobs[largestBlobIndex].Count;
+        return center;
     }
 
-    // Método nuevo para mover la nave a la posición del círculo rojo
-    private void MoveShipToDebugPosition(Vector2 centerPoint)
+    // Método simple para calcular el centro promedio de todos los píxeles
+    private Vector2 CalculateAverageCenter()
     {
-        // Obtener la posición normalizada (0-1) en la textura de la webcam
-        Vector2 normalizedPos = new Vector2(
-            centerPoint.x / webcamTexture.width,
-            1f - (centerPoint.y / webcamTexture.height) // Invertir Y para UI
-        );
-
-        // Obtener las esquinas del RawImage en coordenadas de mundo
-        RectTransform rt = webcamRawImage.rectTransform;
-        if (rt == null)
+        Vector2 sum = Vector2.zero;
+        for (int i = 0; i < matchingPixelCount; i++)
         {
-            Debug.LogError("No se pudo obtener el RectTransform del RawImage");
-            return;
+            sum += matchingPixelsBuffer[i];
         }
 
-        // Obtener las esquinas del RawImage en el mundo
-        Vector3[] corners = new Vector3[4];
-        rt.GetWorldCorners(corners);
-        // corners[0] = esquina inferior izquierda
-        // corners[2] = esquina superior derecha
-
-        // Calcular la posición exacta dentro del RawImage basado en la posición normalizada
-        Vector3 exactPosition = new Vector3(
-            Mathf.Lerp(corners[0].x, corners[2].x, normalizedPos.x),
-            Mathf.Lerp(corners[0].y, corners[2].y, normalizedPos.y),
-            playerShip.position.z // Mantener Z
-        );
-
-        // Mover la nave
-        PlayerShip shipController = playerShip.GetComponent<PlayerShip>();
-        if (shipController != null)
-        {
-            shipController.SetTargetPosition(exactPosition);
-        }
-        else
-        {
-            // Movimiento manual con interpolación
-            playerShip.position = Vector3.Lerp(
-                playerShip.position,
-                exactPosition,
-                Time.deltaTime * 10f
-            );
-        }
-
-        // Debug visual - dibujar una línea para ver dónde se está moviendo la nave
-        Debug.DrawLine(
-            playerShip.position,
-            exactPosition,
-            Color.yellow,
-            0.1f
-        );
-
-        Debug.Log($"Moviendo nave a: {exactPosition} (desde centro en textura: {centerPoint})");
+        return sum / matchingPixelCount;
     }
 
-    private bool IsColorMatch(Color pixel, Color target, float tolerance)
+    // Algoritmo para agrupar píxeles en blobs conectados
+    private List<List<int>> FindConnectedBlobs()
+    {
+        List<List<int>> blobs = new List<List<int>>();
+
+        // Resetear buffer de procesados
+        for (int i = 0; i < matchingPixelCount; i++)
+        {
+            processedPixelBuffer[i] = false;
+        }
+
+        for (int i = 0; i < matchingPixelCount; i++)
+        {
+            if (processedPixelBuffer[i])
+                continue;
+
+            // Iniciar nuevo blob
+            List<int> currentBlob = new List<int>();
+            Queue<int> pixelsToProcess = new Queue<int>();
+
+            pixelsToProcess.Enqueue(i);
+            processedPixelBuffer[i] = true;
+
+            while (pixelsToProcess.Count > 0)
+            {
+                int pixelIndex = pixelsToProcess.Dequeue();
+                currentBlob.Add(pixelIndex);
+
+                // Buscar píxeles cercanos (proximidad)
+                for (int j = 0; j < matchingPixelCount; j++)
+                {
+                    if (!processedPixelBuffer[j] &&
+                        Vector2.Distance(matchingPixelsBuffer[pixelIndex], matchingPixelsBuffer[j]) < blobProximityThreshold)
+                    {
+                        pixelsToProcess.Enqueue(j);
+                        processedPixelBuffer[j] = true;
+                    }
+                }
+            }
+
+            blobs.Add(currentBlob);
+        }
+
+        return blobs;
+    }
+
+    // Versión optimizada de IsColorMatch
+    private bool OptimizedIsColorMatch(Color pixel, Color target, float tolerance)
     {
         if (useHSVDetection)
         {
-            // Convertir RGB a HSV para mejor detección de color
+            // Comprobación rápida RGB para descarte temprano
+            float rDiff = Mathf.Abs(pixel.r - target.r);
+            float gDiff = Mathf.Abs(pixel.g - target.g);
+            float bDiff = Mathf.Abs(pixel.b - target.b);
+
+            // Si alguna diferencia es grande, rechazar inmediatamente
+            float quickThreshold = tolerance * 0.7f;
+            if (rDiff > quickThreshold || gDiff > quickThreshold || bDiff > quickThreshold)
+                return false;
+
+            // Convertir a HSV para comparación más precisa
             float pixelH, pixelS, pixelV;
             float targetH, targetS, targetV;
 
             Color.RGBToHSV(pixel, out pixelH, out pixelS, out pixelV);
             Color.RGBToHSV(target, out targetH, out targetS, out targetV);
 
-            // Calcular la diferencia en matiz (H) teniendo en cuenta que es circular (0-1)
+            // Calcular diferencia en matiz (teniendo en cuenta naturaleza circular)
             float hDiff = Mathf.Min(Mathf.Abs(pixelH - targetH), 1 - Mathf.Abs(pixelH - targetH));
-
-            // Calcular las diferencias en saturación (S) y valor (V)
             float sDiff = Mathf.Abs(pixelS - targetS);
             float vDiff = Mathf.Abs(pixelV - targetV);
 
-            // Ajustar las ponderaciones para dar más importancia al matiz y menor escala a la tolerancia
+            // Aplicar ponderaciones para dar más importancia al matiz
             float hWeight = 2.0f;
             float sWeight = 1.0f;
             float vWeight = 0.5f;
@@ -487,25 +546,10 @@ public class ColorDetector : MonoBehaviour
             // Normalizar el peso total
             float totalWeight = hWeight + sWeight + vWeight;
 
-            // Aplicar una escala no lineal a la tolerancia para que tenga un comportamiento más intuitivo
-            // Esto hace que la tolerancia sea más restrictiva incluso con valores altos
-            float scaledTolerance = Mathf.Pow(tolerance, 1.5f) * 0.5f;
-
-            // Calcular la diferencia ponderada
+            // Calcular diferencia ponderada
             float weightedDiff = (hDiff * hWeight + sDiff * sWeight + vDiff * vWeight) / totalWeight;
 
-            // Usar un umbral más estricto para el matiz cuando la saturación es alta
-            // Esto evita que colores diferentes pero con la misma luminosidad se consideren iguales
-            if (targetS > 0.3f && pixelS > 0.3f)
-            {
-                if (hDiff > tolerance * 0.7f)
-                {
-                    return false;
-                }
-            }
-
-            // Aplicar umbrales máximos absolutos para cada componente
-            // Esto impide que la tolerancia alta permita cambios demasiado drásticos
+            // Umbrales específicos para cada componente
             float maxHDiff = Mathf.Min(0.25f, tolerance);
             float maxSDiff = Mathf.Min(0.5f, tolerance * 1.2f);
             float maxVDiff = Mathf.Min(0.5f, tolerance * 1.5f);
@@ -515,45 +559,28 @@ public class ColorDetector : MonoBehaviour
                 return false;
             }
 
-            // Verificar si la diferencia ponderada está dentro del rango de tolerancia
-            return weightedDiff < scaledTolerance;
+            // Aplicar tolerancia escalada no lineal
+            return weightedDiff < Mathf.Pow(tolerance, 1.5f) * 0.5f;
         }
         else
         {
-            // Método RGB mejorado
+            // Método RGB optimizado
             float rDiff = Mathf.Abs(pixel.r - target.r);
             float gDiff = Mathf.Abs(pixel.g - target.g);
             float bDiff = Mathf.Abs(pixel.b - target.b);
 
-            // Calcular la diferencia promedio
+            // Calcular diferencia promedio
             float avgDiff = (rDiff + gDiff + bDiff) / 3f;
 
-            // Aplicar una escala no lineal a la tolerancia
-            float scaledTolerance = Mathf.Pow(tolerance, 1.5f) * 0.5f;
-
-            // Establecer límites máximos para cada componente
+            // Umbral máximo por componente
             float maxComponentDiff = Mathf.Min(0.4f, tolerance * 1.2f);
 
-            // Verificar diferencias por componente y la diferencia promedio
+            // Verificación de componentes y promedio
             return (rDiff < maxComponentDiff &&
                     gDiff < maxComponentDiff &&
                     bDiff < maxComponentDiff &&
-                    avgDiff < scaledTolerance);
+                    avgDiff < Mathf.Pow(tolerance, 1.5f) * 0.5f);
         }
-    }
-
-    private Vector2 CalculateCenterPoint(List<Vector2> points)
-    {
-        if (points.Count == 0)
-            return Vector2.zero;
-
-        Vector2 sum = Vector2.zero;
-        foreach (Vector2 point in points)
-        {
-            sum += point;
-        }
-
-        return sum / points.Count;
     }
 
     private Vector2 ConvertToCanvasPosition(Vector2 texturePosition)
@@ -650,8 +677,6 @@ public class ColorDetector : MonoBehaviour
 
                 // Configurar el color (puede ser el color detectado o un color distintivo)
                 marker.SetColor(new Color(targetColor.r, targetColor.g, targetColor.b, 0.7f));
-
-                Debug.Log($"Marcador de detección instanciado en posición: {position}");
             }
             else
             {
@@ -664,76 +689,32 @@ public class ColorDetector : MonoBehaviour
         }
     }
 
-    // Reemplaza el método MoveShipToCenterPoint() en ColorDetector.cs con este:
-
-    // Modificación para el método MoveShipToCenterPoint() en ColorDetector.cs
-
     private void MoveShipToCenterPoint(Vector2 centerPoint)
     {
-        if (playerShip == null)
-        {
-            Debug.LogError("playerShip no está asignado en ColorDetector");
+        if (playerShip == null || webcamRawImage == null)
             return;
-        }
 
-        if (webcamRawImage == null)
-        {
-            Debug.LogError("webcamRawImage no está asignado en ColorDetector");
-            return;
-        }
-
-        // IMPORTANTE: Problema identificado - el eje Y está invertido
-        // 1. Convertir de coordenadas de textura a normalizadas (0-1)
-        // CORRECCIÓN: No invertimos el eje Y aquí, ya que eso causa la inversión
+        // Convertir de coordenadas de textura a normalizadas (0-1)
         Vector2 normalizedPos = new Vector2(
             centerPoint.x / webcamTexture.width,
-            centerPoint.y / webcamTexture.height  // CAMBIO AQUÍ: Quitamos el 1.0f - ...
+            centerPoint.y / webcamTexture.height
         );
 
-        // Alternativamente, si lo anterior no funciona, invertir la lógica aquí:
-        // Intentar segunda solución si la primera no funciona
-        // Vector2 normalizedPos = new Vector2(
-        //     centerPoint.x / webcamTexture.width,
-        //     1.0f - (centerPoint.y / webcamTexture.height)  // Mantener la inversión
-        // );
-        // // Pero luego invertir la interpolación en Y:
-        // worldPos.y = Mathf.Lerp(corners[2].y, corners[0].y, normalizedPos.y);  // Invertir orden de corners
-
-        // 2. Obtener las dimensiones y posición del RawImage
+        // Obtener las dimensiones del RawImage en el mundo
         RectTransform rt = webcamRawImage.rectTransform;
-
-        // Obtener posición y tamaño del RawImage en el espacio del mundo
         Vector3[] corners = new Vector3[4];
         rt.GetWorldCorners(corners);
 
-        // corners[0] = Bottom-Left, corners[1] = Top-Left, 
-        // corners[2] = Top-Right, corners[3] = Bottom-Right
-
-        // 3. Calcular la posición exacta dentro del espacio del RawImage
+        // Calcular la posición exacta en el espacio del mundo
         Vector3 worldPos = Vector3.zero;
-
-        // Usar transformación directa basada en las esquinas del RawImage
         worldPos.x = Mathf.Lerp(corners[0].x, corners[2].x, normalizedPos.x);
-
-        // CORRECCIÓN: Invertir el orden de interpolación para el eje Y
-        // Ya que no invertimos en la normalización, debemos interpolar
-        // desde la esquina inferior a la superior (no al revés)
         worldPos.y = Mathf.Lerp(corners[0].y, corners[2].y, normalizedPos.y);
-
-        // Si la solución anterior no funciona, prueba esta alternativa:
-        // worldPos.y = Mathf.Lerp(corners[2].y, corners[0].y, normalizedPos.y);
-
-        worldPos.z = playerShip.position.z; // Mantener Z
-
-        // Debug avanzado - mostrar todos los pasos de conversión
-        Debug.Log($"Detección: Pixel={centerPoint}, Normalizado={normalizedPos}, " +
-                  $"Esquinas=[Bot-Left:{corners[0]}, Top-Left:{corners[1]}, Top-Right:{corners[2]}, Bot-Right:{corners[3]}], " +
-                  $"Final={worldPos}");
+        worldPos.z = playerShip.position.z;  // Mantener Z
 
         // Guardar posición para el círculo rojo
         redCircleWorldPosition = worldPos;
 
-        // IMPORTANTE: Actualizar directamente la posición sin animación
+        // Actualizar directamente la posición de la nave
         playerShip.position = worldPos;
 
         // Crear visualización del círculo rojo para depuración
@@ -786,9 +767,7 @@ public class ColorDetector : MonoBehaviour
 
             if (canvas.worldCamera != mainCamera)
             {
-                Debug.LogWarning("El Canvas está usando una cámara diferente a mainCamera. " +
-                                "Canvas.worldCamera: " + (canvas.worldCamera != null ? canvas.worldCamera.name : "null") +
-                                ", mainCamera: " + (mainCamera != null ? mainCamera.name : "null"));
+                Debug.LogWarning("El Canvas está usando una cámara diferente a mainCamera.");
             }
         }
 
@@ -800,6 +779,68 @@ public class ColorDetector : MonoBehaviour
 
             Debug.Log($"Nave en capa: {LayerMask.LayerToName(shipLayer)} (índice {shipLayer}). " +
                      $"Visible para mainCamera: {isLayerVisible}");
+        }
+    }
+
+    private void CreateVisibleRedCircle(Vector2 centerPoint)
+    {
+        // Eliminar cualquier círculo anterior
+        GameObject existingCircle = GameObject.Find("VisibleRedCircle");
+        if (existingCircle != null)
+        {
+            Destroy(existingCircle);
+        }
+
+        // Crear un nuevo círculo rojo visible usando el prefab
+        if (redCirclePrefab != null)
+        {
+            // Convertir coordenadas de textura a coordenadas normalizadas
+            Vector2 normalizedPos = new Vector2(
+                centerPoint.x / webcamTexture.width,
+                1 - (centerPoint.y / webcamTexture.height) // Invertir Y
+            );
+
+            // Obtener las esquinas del RawImage en coordenadas de mundo
+            RectTransform rt = webcamRawImage.rectTransform;
+            Vector3[] corners = new Vector3[4];
+            rt.GetWorldCorners(corners);
+
+            // Calcular la posición exacta en el mundo
+            Vector3 worldPos = new Vector3(
+                Mathf.Lerp(corners[0].x, corners[2].x, normalizedPos.x),
+                Mathf.Lerp(corners[0].y, corners[2].y, normalizedPos.y),
+                -1 // Delante del canvas
+            );
+
+            // Guardar la posición mundial para usar con la nave
+            redCircleWorldPosition = worldPos;
+
+            // Instanciar el círculo rojo visible
+            GameObject circle = Instantiate(redCirclePrefab, worldPos, Quaternion.identity);
+            circle.name = "VisibleRedCircle";
+            circle.SetActive(true);
+
+            // Hacer que el círculo sea pequeño
+            circle.transform.localScale = Vector3.one * 0.1f;
+        }
+    }
+
+    // Método para depuración - dibuja rayos de detección en la vista de escena
+    private void OnDrawGizmos()
+    {
+        if (!Application.isPlaying || !objectDetected || lastDetectedPosition == Vector2.zero)
+            return;
+
+        // Dibujar el centro detectado
+        Gizmos.color = Color.red;
+        Vector3 worldPos = new Vector3(redCircleWorldPosition.x, redCircleWorldPosition.y, redCircleWorldPosition.z);
+        Gizmos.DrawSphere(worldPos, 0.2f);
+
+        // Dibujar línea de la nave al objeto detectado
+        if (playerShip != null)
+        {
+            Gizmos.color = Color.yellow;
+            Gizmos.DrawLine(playerShip.position, worldPos);
         }
     }
 }

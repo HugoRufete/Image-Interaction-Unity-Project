@@ -1,3 +1,4 @@
+// AsteroidSpawner.cs - Script optimizado
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
@@ -23,15 +24,23 @@ public class AsteroidSpawner : MonoBehaviour
     [SerializeField] private float difficultyIncreaseRate = 0.1f;
     [SerializeField] private float maxDifficultyMultiplier = 2.5f;
 
+    [Header("Optimization Settings")]
+    [SerializeField] private int initialPoolSize = 20;
+    [SerializeField] private int maxPoolSize = 50;
+    [SerializeField] private bool useObjectPooling = true;
+
     private float difficultyMultiplier = 1f;
     private float timeSinceStart = 0f;
     private Coroutine spawnCoroutine;
     private GameManager gameManager;
     private bool spawningActive = false;
 
+    // Pool de asteroides para optimización
+    private List<GameObject> asteroidPool;
+
     private void Awake()
     {
-        // No iniciar ninguna coroutine en Awake o Start
+        // No iniciar ninguna coroutine en Awake
         spawnCoroutine = null;
         spawningActive = false;
     }
@@ -43,7 +52,7 @@ public class AsteroidSpawner : MonoBehaviour
         if (gameManager == null)
         {
             Debug.LogError("GameManager not found! AsteroidSpawner requires GameManager.");
-            this.enabled = false; // Desactivar este componente si no hay GameManager
+            this.enabled = false;
             return;
         }
 
@@ -51,7 +60,7 @@ public class AsteroidSpawner : MonoBehaviour
         if (asteroidPrefab == null)
         {
             Debug.LogError("Asteroid prefab not assigned to AsteroidSpawner!");
-            this.enabled = false; // Desactivar este componente si no hay prefab
+            this.enabled = false;
             return;
         }
 
@@ -72,13 +81,68 @@ public class AsteroidSpawner : MonoBehaviour
             else
             {
                 Debug.LogError("Failed to find player. Please assign player transform manually.");
-                this.enabled = false; // Desactivar este componente si no hay jugador
+                this.enabled = false;
                 return;
             }
         }
 
-        // No iniciar el spawning automáticamente
+        // Inicializar el pool de asteroides
+        if (useObjectPooling)
+        {
+            InitializeAsteroidPool();
+        }
+
         Debug.Log("AsteroidSpawner initialized - NOT spawning until game starts");
+    }
+
+    // Inicializar el pool de asteroides
+    private void InitializeAsteroidPool()
+    {
+        asteroidPool = new List<GameObject>(initialPoolSize);
+
+        for (int i = 0; i < initialPoolSize; i++)
+        {
+            GameObject asteroid = Instantiate(asteroidPrefab);
+            asteroid.SetActive(false);
+            asteroidPool.Add(asteroid);
+        }
+
+        Debug.Log($"Asteroid pool initialized with {initialPoolSize} asteroids");
+    }
+
+    // Obtener un asteroide del pool
+    private GameObject GetAsteroidFromPool()
+    {
+        // Buscar asteroide inactivo en el pool
+        for (int i = 0; i < asteroidPool.Count; i++)
+        {
+            if (asteroidPool[i] != null && !asteroidPool[i].activeInHierarchy)
+            {
+                return asteroidPool[i];
+            }
+        }
+
+        // Si no hay asteroides inactivos disponibles y no hemos alcanzado el máximo,
+        // crear uno nuevo y añadirlo al pool
+        if (asteroidPool.Count < maxPoolSize)
+        {
+            GameObject newAsteroid = Instantiate(asteroidPrefab);
+            newAsteroid.SetActive(false);
+            asteroidPool.Add(newAsteroid);
+            return newAsteroid;
+        }
+
+        // Si el pool está lleno, reutilizar el primer asteroide 
+        // (probablemente el más antiguo)
+        if (asteroidPool.Count > 0)
+        {
+            asteroidPool[0].SetActive(false);
+            return asteroidPool[0];
+        }
+
+        // Fallback: crear un asteroide nuevo (no debería ocurrir normalmente)
+        Debug.LogWarning("Asteroid pool is empty and at max capacity. Creating a non-pooled asteroid.");
+        return Instantiate(asteroidPrefab);
     }
 
     private void Update()
@@ -158,8 +222,27 @@ public class AsteroidSpawner : MonoBehaviour
         // Select random spawn point
         Transform spawnPoint = spawnPoints[Random.Range(0, spawnPoints.Count)];
 
-        // Create asteroid
-        GameObject asteroid = Instantiate(asteroidPrefab, spawnPoint.position, Quaternion.identity);
+        GameObject asteroid;
+
+        // Usar pool de objetos o crear nuevo según configuración
+        if (useObjectPooling)
+        {
+            asteroid = GetAsteroidFromPool();
+            if (asteroid == null)
+            {
+                Debug.LogError("Failed to get asteroid from pool");
+                return;
+            }
+
+            // Posicionar el asteroide y activarlo
+            asteroid.transform.position = spawnPoint.position;
+            asteroid.SetActive(true);
+        }
+        else
+        {
+            // Método tradicional sin pooling
+            asteroid = Instantiate(asteroidPrefab, spawnPoint.position, Quaternion.identity);
+        }
 
         // Randomize asteroid properties
         float size = Random.Range(minSize, maxSize);
@@ -232,12 +315,28 @@ public class AsteroidSpawner : MonoBehaviour
     // Destruir todos los asteroides existentes
     public void DestroyAllAsteroids()
     {
-        GameObject[] asteroids = GameObject.FindGameObjectsWithTag("Asteroid");
-        foreach (GameObject asteroid in asteroids)
+        if (useObjectPooling)
         {
-            Destroy(asteroid);
+            // Desactivar todos los asteroides en el pool
+            foreach (GameObject asteroid in asteroidPool)
+            {
+                if (asteroid != null)
+                {
+                    asteroid.SetActive(false);
+                }
+            }
         }
-        Debug.Log("Destroyed all existing asteroids: " + asteroids.Length);
+        else
+        {
+            // Método tradicional: destruir todos los asteroides
+            GameObject[] asteroids = GameObject.FindGameObjectsWithTag("Asteroid");
+            foreach (GameObject asteroid in asteroids)
+            {
+                Destroy(asteroid);
+            }
+        }
+
+        Debug.Log("All existing asteroids removed");
     }
 
 #if UNITY_EDITOR
